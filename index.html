@@ -390,6 +390,18 @@
             font-size: 11px;
         }
 
+        /* 版本导航 */
+        .version-nav {
+            display: flex; justify-content: center; gap: 6px; padding: 8px 0 0;
+        }
+        .version-nav a {
+            padding: 4px 14px; border-radius: 6px; font-size: 13px;
+            color: var(--text-secondary); text-decoration: none;
+            border: 1px solid var(--border); transition: all .2s;
+        }
+        .version-nav a:hover { color: var(--text); border-color: var(--accent); }
+        .version-nav a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
         /* 页脚 */
         .footer {
             text-align: center;
@@ -443,6 +455,13 @@
 </head>
 <body>
     <div class="container">
+        <!-- 版本导航 -->
+        <div class="version-nav">
+            <a href="index.html" class="active">基础版</a>
+            <a href="advanced.html">高级版</a>
+            <a href="minimal.html">极简版</a>
+        </div>
+
         <!-- Header -->
         <div class="header">
             <h1>
