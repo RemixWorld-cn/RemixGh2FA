@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>TOTP 极简版</title>
+</head>
+<body>
+    <h1>
+        <svg viewBox="0 0 39.31004 41.94494" xmlns="http://www.w3.org/2000/svg" width="39.31004" height="41.94494">
+            <g transform="translate(-188.88763,-154.88446)">
+                <g fill="none" stroke="#000000" stroke-width="2" stroke-miterlimit="10">
+                    <path d="M219.84633,187.09038v2.9813c0,3.1799 -2.57781,5.75772 -5.75771,5.75772h-18.44327c-3.1799,0 -5.75771,-2.57782 -5.75771,-5.75772v-28.4295c0,-3.1799 2.57781,-5.75772 5.75771,-5.75772h18.44327c3.1799,0 5.75771,2.57782 5.75771,5.75772v0.75409"/>
+                    <path d="M227.19767,158.4247v12.62462c0,2.73834 -2.21986,4.9582 -4.9582,4.9582h-8.5567c-2.73834,0 -4.9582,-2.21986 -4.9582,-4.9582v-8.3648"/>
+                    <path d="M208.71655,190.72398v-9.61743c0,-2.73834 2.21986,-4.9582 4.9582,-4.9582h8.5567c2.73834,0 4.9582,2.21986 4.9582,4.9582v15.12988"/>
+                </g>
+            </g>
+        </svg>
+        TOTP 极简版
+    </h1>
+    <p>离线可用，极简界面，支持 Base32 密钥与 otpauth 链接。</p>
+
+    <label>密钥或 otpauth 链接<br>
+        <textarea id="secretInput" rows="4" cols="40" placeholder="例如：JBSWY3DPEHPK3PXP"></textarea>
+    </label>
+    <br>
+    <label>账户名（可选）<br>
+        <input id="accountName" placeholder="例如：GitHub 用户名">
+    </label>
+    <br>
+    <label>服务商（可选）<br>
+        <input id="issuerName" placeholder="例如：GitHub">
+    </label>
+    <br>
+    <button onclick="addAccount()">添加账户</button>
+    <div id="message"></div>
+
+    <h2>当前验证码</h2>
+    <div id="otpOutput">请添加一个账户</div>
+
+    <h2>已保存账户</h2>
+    <div id="accountList">暂无账户</div>
+
+    <script>
+        const STORAGE_KEY = 'totp_minimal_accounts';
+        let accounts = [];
+        let currentIndex = -1;
+
+        function base32Decode(input) {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+            input = input.toUpperCase().replace(/[^A-Z2-7]/g, '');
+            let bits = '';
+            for (let i = 0; i < input.length; i++) {
+                const val = alphabet.indexOf(input[i]);
+                if (val < 0) continue;
+                bits += val.toString(2).padStart(5, '0');
+            }
+            const bytes = [];
+            for (let i = 0; i + 8 <= bits.length; i += 8) {
+                bytes.push(parseInt(bits.slice(i, i + 8), 2));
+            }
+            return new Uint8Array(bytes);
+        }
+
+        async function hmacSha1(key, message) {
+            const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+            const sig = await crypto.subtle.sign('HMAC', cryptoKey, message);
+            return new Uint8Array(sig);
+        }
+
+        function truncate(hmac) {
+            const offset = hmac[19] & 0x0f;
+            const code = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset+1] & 0xff) << 16) | ((hmac[offset+2] & 0xff) << 8) | (hmac[offset+3] & 0xff);
+            return code % 1000000;
+        }
+
+        async function generateTOTP(secret, period = 30, digits = 6) {
+            const key = base32Decode(secret);
+            const now = Math.floor(Date.now() / 1000);
+            const counter = new Uint8Array(8);
+            let value = Math.floor(now / period);
+            for (let i = 7; i >= 0; i--) {
+                counter[i] = value & 0xff;
+                value >>= 8;
+            }
+            const hmac = await hmacSha1(key, counter);
+            const otp = truncate(hmac).toString().padStart(digits, '0');
+            return otp;
+        }
+
+        function parseOtpauth(value) {
+            try {
+                const url = new URL(value);
+                if (url.protocol !== 'otpauth:') return null;
+                const secret = url.searchParams.get('secret');
+                if (!secret) return null;
+                let account = url.pathname.replace(/^\//, '');
+                let issuer = url.searchParams.get('issuer') || '';
+                if (account.includes(':')) {
+                    const parts = account.split(':');
+                    issuer = issuer || parts[0];
+                    account = parts.slice(1).join(':');
+                }
+                return { secret, account: decodeURIComponent(account), issuer: decodeURIComponent(issuer), period: parseInt(url.searchParams.get('period')) || 30, digits: parseInt(url.searchParams.get('digits')) || 6 };
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function cleanSecret(input) {
+            const text = input.trim();
+            const parsed = parseOtpauth(text);
+            if (parsed) return parsed;
+            const cleaned = text.replace(/^secret[=:]\s*/i, '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+            if (cleaned.length < 16) return null;
+            return { secret: cleaned, account: '', issuer: '', period: 30, digits: 6 };
+        }
+
+        function saveAccounts() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(accounts));
+        }
+
+        function loadAccounts() {
+            try {
+                const data = localStorage.getItem(STORAGE_KEY);
+                accounts = data ? JSON.parse(data) : [];
+                currentIndex = accounts.length > 0 ? 0 : -1;
+            } catch (e) {
+                accounts = [];
+                currentIndex = -1;
+            }
+        }
+
+        function setMessage(text) {
+            document.getElementById('message').textContent = text;
+        }
+
+        async function refreshOtp() {
+            const output = document.getElementById('otpOutput');
+            if (currentIndex < 0 || !accounts[currentIndex]) {
+                output.textContent = '请添加一个账户';
+                return;
+            }
+            try {
+                output.textContent = await generateTOTP(accounts[currentIndex].secret, accounts[currentIndex].period, accounts[currentIndex].digits);
+            } catch (e) {
+                output.textContent = '密钥无效';
+            }
+        }
+
+        function renderAccounts() {
+            const list = document.getElementById('accountList');
+            if (accounts.length === 0) {
+                list.textContent = '暂无账户';
+                return;
+            }
+            list.innerHTML = '';
+            accounts.forEach((acc, index) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = (acc.issuer ? acc.issuer + ' / ' : '') + acc.account;
+                button.onclick = () => { currentIndex = index; refreshOtp(); };
+                list.appendChild(button);
+                list.appendChild(document.createElement('br'));
+            });
+        }
+
+        async function addAccount() {
+            const input = document.getElementById('secretInput').value;
+            const name = document.getElementById('accountName').value.trim();
+            const issuer = document.getElementById('issuerName').value.trim();
+            if (!input.trim()) { setMessage('请输入密钥或 otpauth 链接'); return; }
+            const cleaned = cleanSecret(input);
+            if (!cleaned) { setMessage('无效密钥，请检查后重试'); return; }
+            if (accounts.some(a => a.secret === cleaned.secret)) { setMessage('该密钥已存在'); return; }
+            accounts.push({ secret: cleaned.secret, account: name || cleaned.account || '账户' + (accounts.length + 1), issuer: issuer || cleaned.issuer || '', period: cleaned.period, digits: cleaned.digits });
+            currentIndex = accounts.length - 1;
+            saveAccounts();
+            renderAccounts();
+            refreshOtp();
+            setMessage('账户已添加');
+            document.getElementById('secretInput').value = '';
+            document.getElementById('accountName').value = '';
+            document.getElementById('issuerName').value = '';
+        }
+
+        function init() {
+            loadAccounts();
+            renderAccounts();
+            refreshOtp();
+            setInterval(refreshOtp, 1000);
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
